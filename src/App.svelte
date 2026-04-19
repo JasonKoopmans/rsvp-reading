@@ -19,6 +19,8 @@
   import Settings from './lib/components/Settings.svelte';
   import TextInput from './lib/components/TextInput.svelte';
   import ProgressBar from './lib/components/ProgressBar.svelte';
+  import SyncPanel from './lib/components/SyncPanel.svelte';
+  import { SyncManager } from './lib/sync/SyncManager.js';
   import { extractWordFrame } from './lib/rsvp-utils.js';
 
   // State
@@ -53,11 +55,65 @@
   let intervalId = null;
   let fadeTimeoutId = null;
 
+  // Sync
+  const sync = new SyncManager();
+  let syncStatus = 'disconnected';
+  let syncRoomCode = null;
+  let syncPeers = 0;
+  let _applyingRemote = false;
+  let _settingsSyncTimer = null;
+
   // Derived state
   $: currentWord = words[currentWordIndex - 1] || (words.length > 0 ? words[0] : '');
   $: wordFrame = extractWordFrame(words, Math.max(0, currentWordIndex - 1), frameWordCount);
   $: timeRemaining = formatTimeRemaining(words.length - currentWordIndex, wordsPerMinute);
   $: isFocusMode = isPlaying || isPaused;
+
+  function getSettings() {
+    return {
+      wordsPerMinute, fadeEnabled, fadeDuration,
+      pauseOnPunctuation, punctuationPauseMultiplier,
+      wordLengthWPMMultiplier, pauseAfterWords, pauseDuration,
+      frameWordCount
+    };
+  }
+
+  function applySettings(s) {
+    if (s.wordsPerMinute != null) wordsPerMinute = s.wordsPerMinute;
+    if (s.fadeEnabled != null) fadeEnabled = s.fadeEnabled;
+    if (s.fadeDuration != null) fadeDuration = s.fadeDuration;
+    if (s.pauseOnPunctuation != null) pauseOnPunctuation = s.pauseOnPunctuation;
+    if (s.punctuationPauseMultiplier != null) punctuationPauseMultiplier = s.punctuationPauseMultiplier;
+    if (s.wordLengthWPMMultiplier != null) wordLengthWPMMultiplier = s.wordLengthWPMMultiplier;
+    if (s.pauseAfterWords != null) pauseAfterWords = s.pauseAfterWords;
+    if (s.pauseDuration != null) pauseDuration = s.pauseDuration;
+    if (s.frameWordCount != null) frameWordCount = s.frameWordCount;
+  }
+
+  function applyRoomState(state) {
+    _applyingRemote = true;
+    if (state.text) {
+      text = state.text;
+      stop();
+      parseText();
+    }
+    if (state.settings) applySettings(state.settings);
+    if (state.wordIndex != null && words.length > 0) {
+      currentWordIndex = Math.min(state.wordIndex, words.length);
+      progress = (currentWordIndex / words.length) * 100;
+    }
+    if (state.isPlaying) {
+      start();
+    } else if (state.isPaused) {
+      isPaused = true;
+    }
+    _applyingRemote = false;
+  }
+
+  function debouncedSyncSettings() {
+    clearTimeout(_settingsSyncTimer);
+    _settingsSyncTimer = setTimeout(() => sync.sendSettings(getSettings()), 350);
+  }
 
   function parseText() {
     words = parseTextUtil(text);
@@ -111,15 +167,20 @@
     isPaused = false;
     showSettings = false;
     showTextInput = false;
+    if (!_applyingRemote) {
+      sync.sendPlayback('play', currentWordIndex);
+      sync.startHeartbeat(() => currentWordIndex);
+    }
     showNextWord();
   }
 
   function pause() {
     isPlaying = false;
     isPaused = true;
-    if (intervalId) {
-      clearTimeout(intervalId);
-      intervalId = null;
+    if (intervalId) { clearTimeout(intervalId); intervalId = null; }
+    if (!_applyingRemote) {
+      sync.stopHeartbeat();
+      sync.sendPlayback('pause', currentWordIndex);
     }
   }
 
@@ -127,6 +188,10 @@
     if (currentWordIndex < words.length) {
       isPlaying = true;
       isPaused = false;
+      if (!_applyingRemote) {
+        sync.sendPlayback('play', currentWordIndex);
+        sync.startHeartbeat(() => currentWordIndex);
+      }
       scheduleNextWord();
     }
   }
@@ -137,15 +202,32 @@
     currentWordIndex = 0;
     progress = 0;
     wordOpacity = 1;
-    if (intervalId) {
-      clearTimeout(intervalId);
-      intervalId = null;
+    if (intervalId) { clearTimeout(intervalId); intervalId = null; }
+    if (!_applyingRemote) {
+      sync.stopHeartbeat();
+      sync.sendPlayback('stop', 0);
     }
   }
 
   function restart() {
+    // Suppress stop()'s sync send; start() will broadcast play from 0
+    const prev = _applyingRemote;
+    _applyingRemote = true;
     stop();
+    _applyingRemote = prev;
     start();
+  }
+
+  function skipBack(n = 5) {
+    currentWordIndex = Math.max(0, currentWordIndex - n);
+    if (words.length > 0) progress = (currentWordIndex / words.length) * 100;
+    sync.sendSeek(currentWordIndex);
+  }
+
+  function skipForward(n = 5) {
+    currentWordIndex = Math.min(words.length, currentWordIndex + n);
+    if (words.length > 0) progress = (currentWordIndex / words.length) * 100;
+    sync.sendSeek(currentWordIndex);
   }
 
   function handleTextApply(event) {
@@ -153,6 +235,7 @@
     stop();
     parseText();
     showTextInput = false;
+    sync.sendTextUpdate(text);
   }
 
   async function handleFileSelect(event) {
@@ -168,6 +251,7 @@
       parseText();
       showTextInput = false;
       loadingMessage = '';
+      sync.sendTextUpdate(text);
     } catch (error) {
       console.error('Error parsing file:', error);
       loadingMessage = `Error: ${error.message}`;
@@ -177,23 +261,17 @@
     }
   }
 
+  function handleSettingsChange() {
+    debouncedSyncSettings();
+  }
+
   function saveCurrentSession() {
     if (words.length === 0) return false;
     return saveSession({
       text,
       currentWordIndex,
       totalWords: words.length,
-      settings: {
-        wordsPerMinute,
-        fadeEnabled,
-        fadeDuration,
-        pauseOnPunctuation,
-        punctuationPauseMultiplier,
-        wordLengthWPMMultiplier,
-        pauseAfterWords,
-        pauseDuration,
-        frameWordCount
-      }
+      settings: getSettings()
     });
   }
 
@@ -206,17 +284,7 @@
     currentWordIndex = session.currentWordIndex;
     progress = (currentWordIndex / words.length) * 100;
 
-    if (session.settings) {
-      wordsPerMinute = session.settings.wordsPerMinute ?? wordsPerMinute;
-      fadeEnabled = session.settings.fadeEnabled ?? fadeEnabled;
-      fadeDuration = session.settings.fadeDuration ?? fadeDuration;
-      pauseOnPunctuation = session.settings.pauseOnPunctuation ?? pauseOnPunctuation;
-      punctuationPauseMultiplier = session.settings.punctuationPauseMultiplier ?? punctuationPauseMultiplier;
-      wordLengthWPMMultiplier = session.settings.wordLengthWPMMultiplier ?? wordLengthWPMMultiplier;
-      pauseAfterWords = session.settings.pauseAfterWords ?? pauseAfterWords;
-      pauseDuration = session.settings.pauseDuration ?? pauseDuration;
-      frameWordCount = session.settings.frameWordCount ?? frameWordCount;
-    }
+    if (session.settings) applySettings(session.settings);
 
     showSavedSessionPrompt = false;
     return true;
@@ -249,6 +317,7 @@
     if (targetIndex !== undefined) {
       currentWordIndex = targetIndex;
       progress = (currentWordIndex / words.length) * 100;
+      sync.sendSeek(currentWordIndex);
     }
 
     showJumpTo = false;
@@ -260,6 +329,20 @@
     const targetIndex = Math.floor((percentage / 100) * words.length);
     currentWordIndex = Math.max(0, Math.min(words.length, targetIndex));
     progress = (currentWordIndex / words.length) * 100;
+    sync.sendSeek(currentWordIndex);
+  }
+
+  function handleSyncJoin(event) {
+    syncStatus = 'connecting';
+    syncRoomCode = null;
+    sync.joinRoom(event.detail.code);
+  }
+
+  function handleSyncDisconnect() {
+    sync.disconnect();
+    syncStatus = 'disconnected';
+    syncRoomCode = null;
+    syncPeers = 0;
   }
 
   function handleKeydown(e) {
@@ -282,13 +365,9 @@
         } else if (showSavedSessionPrompt) {
           showSavedSessionPrompt = false;
         } else if (isPlaying || isPaused) {
-          // Exit focus mode but preserve position
           isPlaying = false;
           isPaused = false;
-          if (intervalId) {
-            clearTimeout(intervalId);
-            intervalId = null;
-          }
+          if (intervalId) { clearTimeout(intervalId); intervalId = null; }
         }
         break;
       case 'KeyG':
@@ -306,16 +385,19 @@
       case 'ArrowUp':
         e.preventDefault();
         wordsPerMinute = Math.min(1000, wordsPerMinute + 25);
+        debouncedSyncSettings();
         break;
       case 'ArrowDown':
         e.preventDefault();
         wordsPerMinute = Math.max(50, wordsPerMinute - 25);
+        debouncedSyncSettings();
         break;
       case 'ArrowLeft':
         e.preventDefault();
         if (currentWordIndex > 1) {
           currentWordIndex = Math.max(0, currentWordIndex - 2);
           progress = (currentWordIndex / words.length) * 100;
+          sync.sendSeek(currentWordIndex);
         }
         break;
       case 'ArrowRight':
@@ -323,6 +405,7 @@
         if (currentWordIndex < words.length) {
           progress = ((currentWordIndex + 1) / words.length) * 100;
           currentWordIndex++;
+          sync.sendSeek(currentWordIndex);
         }
         break;
     }
@@ -332,19 +415,81 @@
     parseText();
     window.addEventListener('keydown', handleKeydown);
 
-    // Check for saved session
     if (hasSession()) {
       savedSessionInfo = getSessionSummary();
-      if (savedSessionInfo) {
-        showSavedSessionPrompt = true;
-      }
+      if (savedSessionInfo) showSavedSessionPrompt = true;
     }
+
+    // Sync callbacks
+    sync.onConnected = (code, peers, state) => {
+      syncStatus = 'connected';
+      syncRoomCode = code;
+      syncPeers = peers;
+      if (state) applyRoomState(state);
+    };
+
+    sync.onDisconnected = () => {
+      syncStatus = 'disconnected';
+      syncRoomCode = null;
+      syncPeers = 0;
+    };
+
+    sync.onPeers = (count) => { syncPeers = count; };
+
+    sync.onTextUpdate = (received) => {
+      _applyingRemote = true;
+      text = received;
+      stop();
+      parseText();
+      _applyingRemote = false;
+    };
+
+    sync.onSettings = (s) => {
+      _applyingRemote = true;
+      applySettings(s);
+      _applyingRemote = false;
+    };
+
+    sync.onPlayback = (action, wordIndex) => {
+      _applyingRemote = true;
+      sync.stopHeartbeat(); // cede heartbeat authority to the initiating device
+      if (action === 'play') {
+        if (wordIndex != null && words.length > 0) {
+          currentWordIndex = Math.min(wordIndex, words.length);
+          progress = (currentWordIndex / words.length) * 100;
+        }
+        if (!isPlaying) start();
+      } else if (action === 'pause') {
+        pause();
+      } else if (action === 'stop') {
+        stop();
+      } else if (action === 'restart') {
+        restart();
+      }
+      _applyingRemote = false;
+    };
+
+    sync.onSeek = (wordIndex) => {
+      _applyingRemote = true;
+      currentWordIndex = Math.min(wordIndex, words.length);
+      if (words.length > 0) progress = (currentWordIndex / words.length) * 100;
+      _applyingRemote = false;
+    };
+
+    // Only snap if drift is more than 1 word to avoid jitter
+    sync.onHeartbeat = (wordIndex) => {
+      if (isPlaying && Math.abs(wordIndex - currentWordIndex) > 1) {
+        currentWordIndex = wordIndex;
+      }
+    };
   });
 
   onDestroy(() => {
     if (intervalId) clearTimeout(intervalId);
     if (fadeTimeoutId) clearTimeout(fadeTimeoutId);
+    clearTimeout(_settingsSyncTimer);
     window.removeEventListener('keydown', handleKeydown);
+    sync.disconnect();
   });
 </script>
 
@@ -354,6 +499,14 @@
     <header>
       <h1>RSVP Reader</h1>
       <div class="header-actions">
+        <SyncPanel
+          roomCode={syncRoomCode}
+          peers={syncPeers}
+          status={syncStatus}
+          configured={sync.isConfigured}
+          on:join={handleSyncJoin}
+          on:disconnect={handleSyncDisconnect}
+        />
         <button
           class="icon-btn"
           on:click={() => { showJumpTo = !showJumpTo; showSettings = false; showTextInput = false; }}
@@ -412,7 +565,6 @@
     </div>
   {/if}
 
-
   {#if showSettings && !isFocusMode}
     <div class="panel-overlay">
       <Settings
@@ -426,6 +578,7 @@
         bind:pauseDuration
         bind:frameWordCount
         on:close={() => showSettings = false}
+        on:change={handleSettingsChange}
       />
     </div>
   {/if}
@@ -522,17 +675,17 @@
         <kbd>Ctrl+S</kbd> Save
       </div>
       <div class="touch-controls mobile-only">
-        <button class="touch-btn" on:click={() => currentWordIndex = Math.max(0, currentWordIndex - 5)} title="Back 5 words">
+        <button class="touch-btn" on:click={() => skipBack(5)} title="Back 5 words">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
         </button>
-        <button class="touch-btn" on:click={() => wordsPerMinute = Math.max(50, wordsPerMinute - 50)} title="Slower">
+        <button class="touch-btn" on:click={() => { wordsPerMinute = Math.max(50, wordsPerMinute - 50); debouncedSyncSettings(); }} title="Slower">
           <span>−WPM</span>
         </button>
         <span class="wpm-display">{wordsPerMinute}</span>
-        <button class="touch-btn" on:click={() => wordsPerMinute = Math.min(1000, wordsPerMinute + 50)} title="Faster">
+        <button class="touch-btn" on:click={() => { wordsPerMinute = Math.min(1000, wordsPerMinute + 50); debouncedSyncSettings(); }} title="Faster">
           <span>+WPM</span>
         </button>
-        <button class="touch-btn" on:click={() => currentWordIndex = Math.min(words.length, currentWordIndex + 5)} title="Forward 5 words">
+        <button class="touch-btn" on:click={() => skipForward(5)} title="Forward 5 words">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/></svg>
         </button>
       </div>
@@ -553,7 +706,7 @@
 
   main {
     height: 100vh;
-    height: 100dvh; /* Dynamic viewport height for mobile */
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     background-color: #000;
@@ -587,6 +740,7 @@
   .header-actions {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
   }
 
   .icon-btn {
@@ -676,7 +830,6 @@
     margin-right: 0.25rem;
   }
 
-  /* Touch controls for mobile */
   .touch-controls {
     display: none;
     justify-content: center;
@@ -718,38 +871,17 @@
     text-align: center;
   }
 
-  .mobile-only {
-    display: none;
-  }
+  .mobile-only { display: none; }
+  .desktop-only { display: flex; }
 
-  .desktop-only {
-    display: flex;
-  }
-
-  /* Mobile styles */
   @media (max-width: 600px) {
-    main {
-      padding: 1rem;
-    }
-
-    main.focus-mode {
-      padding: 0.5rem;
-    }
-
-    .panel-overlay {
-      padding: 1rem;
-    }
-
-    .desktop-only {
-      display: none;
-    }
-
-    .mobile-only {
-      display: flex;
-    }
+    main { padding: 1rem; }
+    main.focus-mode { padding: 0.5rem; }
+    .panel-overlay { padding: 1rem; }
+    .desktop-only { display: none; }
+    .mobile-only { display: flex; }
   }
 
-  /* Jump to panel */
   .jump-to-panel,
   .saved-session-panel {
     background: #1a1a1a;

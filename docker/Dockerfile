@@ -3,6 +3,9 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
+ARG VITE_WS_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+
 COPY package*.json ./
 RUN npm ci
 

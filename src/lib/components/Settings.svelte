@@ -17,6 +17,10 @@
     dispatch('close');
   }
 
+  function changed() {
+    dispatch('change');
+  }
+
   // Quick WPM presets
   const wpmPresets = [200, 300, 400, 500];
 </script>
@@ -52,13 +56,14 @@
         step="25"
         bind:value={wordsPerMinute}
         class="slider"
+        on:input={changed}
       >
       <div class="wpm-presets">
         {#each wpmPresets as preset}
           <button
             class="preset-btn"
             class:active={wordsPerMinute === preset}
-            on:click={() => wordsPerMinute = preset}
+            on:click={() => { wordsPerMinute = preset; changed(); }}
           >
             {preset}
           </button>
@@ -71,7 +76,7 @@
         <span>Lower WPM for longer words</span>
         <span class="control-value">{wordLengthWPMMultiplier}%</span>
       </div>
-      <input type="range" min="0" max="50" step="1" bind:value={wordLengthWPMMultiplier} class="slider">
+      <input type="range" min="0" max="50" step="1" bind:value={wordLengthWPMMultiplier} class="slider" on:input={changed}>
       <p class="hint-text">How many percentage points each letter increases pause duration</p>
     </div>
   </section>
@@ -89,7 +94,7 @@
         <span>Words shown simultaneously</span>
         <span class="control-value">{frameWordCount}</span>
       </div>
-      <input type="range" min="1" max="7" step="2" bind:value={frameWordCount} class="slider">
+      <input type="range" min="1" max="7" step="2" bind:value={frameWordCount} class="slider" on:input={changed}>
       <p class="hint-text">Odd numbers (1, 3, 5, 7) center the highlight best</p>
     </div>
   </section>
@@ -108,7 +113,7 @@
       <button
         class="toggle"
         class:active={fadeEnabled}
-        on:click={() => fadeEnabled = !fadeEnabled}
+        on:click={() => { fadeEnabled = !fadeEnabled; changed(); }}
         role="switch"
         aria-checked={fadeEnabled}
         aria-label="Toggle word fade effect"
@@ -123,7 +128,7 @@
           <span>Duration</span>
           <span class="control-value">{fadeDuration}ms</span>
         </div>
-        <input type="range" min="50" max="300" step="25" bind:value={fadeDuration} class="slider slider-sm">
+        <input type="range" min="50" max="300" step="25" bind:value={fadeDuration} class="slider slider-sm" on:input={changed}>
       </div>
     {/if}
   </section>
@@ -142,7 +147,7 @@
       <button
         class="toggle"
         class:active={pauseOnPunctuation}
-        on:click={() => pauseOnPunctuation = !pauseOnPunctuation}
+        on:click={() => { pauseOnPunctuation = !pauseOnPunctuation; changed(); }}
         role="switch"
         aria-checked={pauseOnPunctuation}
         aria-label="Toggle pause on punctuation"
@@ -157,7 +162,7 @@
           <span>Pause multiplier</span>
           <span class="control-value">{punctuationPauseMultiplier}x</span>
         </div>
-        <input type="range" min="1" max="4" step="0.5" bind:value={punctuationPauseMultiplier} class="slider slider-sm">
+        <input type="range" min="1" max="4" step="0.5" bind:value={punctuationPauseMultiplier} class="slider slider-sm" on:input={changed}>
       </div>
     {/if}
 
@@ -166,7 +171,7 @@
         <span>Pause every N words</span>
         <span class="control-value">{pauseAfterWords === 0 ? 'Off' : pauseAfterWords}</span>
       </div>
-      <input type="range" min="0" max="50" step="5" bind:value={pauseAfterWords} class="slider">
+      <input type="range" min="0" max="50" step="5" bind:value={pauseAfterWords} class="slider" on:input={changed}>
     </div>
 
     {#if pauseAfterWords > 0}
@@ -175,7 +180,7 @@
           <span>Pause duration</span>
           <span class="control-value">{pauseDuration}ms</span>
         </div>
-        <input type="range" min="100" max="2000" step="100" bind:value={pauseDuration} class="slider slider-sm">
+        <input type="range" min="100" max="2000" step="100" bind:value={pauseDuration} class="slider slider-sm" on:input={changed}>
       </div>
     {/if}
   </section>
