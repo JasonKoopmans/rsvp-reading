@@ -1,0 +1,82 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: "41 3 * * 3"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  filesystem:
+    name: Filesystem Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        id: trivy_fs
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+          skip-dirs: node_modules,dist,.git
+
+      - name: Upload filesystem SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      - name: Fail on filesystem findings
+        if: steps.trivy_fs.outcome == 'failure'
+        run: exit 1
+
+  container:
+    name: Container Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f Dockerfile -t rsvp-scan:latest .
+
+      - name: Run Trivy image scan
+        id: trivy_image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: rsvp-scan:latest
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image-app.sarif
+
+      - name: Upload image SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-app.sarif
+          category: trivy-image-app
+
+      - name: Fail on image findings
+        if: steps.trivy_image.outcome == 'failure'
+        run: exit 1

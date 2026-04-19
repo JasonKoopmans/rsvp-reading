@@ -1,0 +1,12 @@
+name: rsvp-reading-codeql
+
+paths:
+  - src
+  - public
+  - server.js
+
+paths-ignore:
+  - dist
+  - node_modules
+  - docker
+  - k8s
