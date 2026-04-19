@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 1.2.3)"
+        description: "Version to release (e.g. 1.2, 1.2.3, or v1.2.3)"
         required: true
         type: string
 
@@ -41,18 +41,42 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get version from tag or input
+      - name: Resolve release version
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            raw_version='${{ inputs.version }}'
           else
-            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            raw_version='${GITHUB_REF#refs/tags/}'
           fi
+
+          version="${raw_version#v}"
+
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            version="$version.0"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: '$raw_version'"
+            echo "Use semantic versioning like 1.2.3, 1.2.3-rc.1, or v1.2.3"
+            exit 1
+          fi
+
+          tag="v$version"
+          is_prerelease=false
+          if [[ "$version" == *-* ]]; then
+            is_prerelease=true
+          fi
+
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$is_prerelease" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -97,7 +121,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
             type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.is_prerelease != 'true' }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -142,7 +166,7 @@ jobs:
             echo "## Container Images"
             echo ""
             echo "- App: ghcr.io/${{ github.repository_owner }}/rsvp-reader:${{ needs.prepare.outputs.version }}"
-            if [[ "${{ github.ref_name }}" != *-* ]]; then
+            if [[ "${{ needs.prepare.outputs.is_prerelease }}" != "true" ]]; then
               echo "- Stable tags also updated: ghcr.io/${{ github.repository_owner }}/rsvp-reader:latest"
             fi
           } > RELEASE_NOTES.md
@@ -150,10 +174,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: Release v${{ needs.prepare.outputs.version }}
           body_path: RELEASE_NOTES.md
           draft: false
-          prerelease: ${{ contains(github.ref, '-') }}
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
