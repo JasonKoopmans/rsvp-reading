@@ -25,7 +25,7 @@ jobs:
       - name: Run Trivy filesystem scan
         id: trivy_fs
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.30.0
         with:
           scan-type: fs
           scan-ref: .
@@ -61,7 +61,7 @@ jobs:
       - name: Run Trivy image scan
         id: trivy_image
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.30.0
         with:
           image-ref: rsvp-scan:latest
           scanners: vuln,secret
